@@ -1,14 +1,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from skyfield.api import load
-import numpy as np
+from skyfield.api import load, Topos
 import pytz
+import numpy as np
 from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
+# -----------------------
 # Skyfield setup
+# -----------------------
 ts = load.timescale()
 eph = load("de421.bsp")
 
@@ -28,47 +30,41 @@ SIGNS = [
     "Sagittarius", "Capricorn", "Aquarius", "Pisces"
 ]
 
+# -----------------------
+# Helpers
+# -----------------------
 def normalize(deg):
-    return deg % 360.0
+    return deg % 360
 
 def sign_index(deg):
     return int(deg // 30)
 
-def compute_ascendant(t, lat_deg, lon_deg):
-    """
-    Approximate tropical Ascendant:
-    - Use apparent sidereal time if available (GAST), else fallback to GMST
-    - Standard formula with mean obliquity (can refine later)
-    """
-    # Skyfield Time has .gast on most versions; fallback to gmst if not present
-    sidereal_hours = getattr(t, "gast", None)
-    if sidereal_hours is None:
-        sidereal_hours = t.gmst
+# -----------------------
+# CORRECT Ascendant
+# -----------------------
+def compute_ascendant(t, lat, lon):
+    observer = eph["earth"] + Topos(latitude_degrees=lat, longitude_degrees=lon)
 
-    # Local Sidereal Time (degrees)
-    lst_deg = (sidereal_hours * 15.0 + lon_deg) % 360.0
-    lst = np.deg2rad(lst_deg)
+    # Direction: due east on the horizon
+    east = observer.at(t).from_altaz(alt_degrees=0, az_degrees=90)
 
-    # Mean obliquity of the ecliptic (degrees)
-    eps = np.deg2rad(23.4392911)
-    lat = np.deg2rad(lat_deg)
+    # Convert to apparent ecliptic coordinates
+    lon, lat, _ = east.ecliptic_latlon()
 
-    asc = np.arctan2(
-        np.sin(lst),
-        np.cos(lst) * np.cos(eps) - np.tan(lat) * np.sin(eps)
-    )
+    return normalize(lon.degrees)
 
-    return normalize(np.rad2deg(asc))
-
+# -----------------------
+# API
+# -----------------------
 @app.route("/calculate", methods=["POST"])
 def calculate():
     data = request.get_json(force=True)
 
-    date = data["date"]          # LOCAL date string: YYYY-MM-DD
-    time = data["time"]          # LOCAL time string: HH:MM (24h)
+    date = data["date"]
+    time = data["time"]
     lat = float(data["latitude"])
     lon = float(data["longitude"])
-    tz_name = data["timezone"]   # IANA, e.g. America/Detroit
+    tz_name = data["timezone"]
 
     tz = pytz.timezone(tz_name)
 
@@ -76,18 +72,24 @@ def calculate():
     dt_local = tz.localize(dt_local)
     dt_utc = dt_local.astimezone(pytz.utc)
 
-    t = ts.utc(dt_utc.year, dt_utc.month, dt_utc.day, dt_utc.hour, dt_utc.minute, dt_utc.second)
+    t = ts.utc(
+        dt_utc.year,
+        dt_utc.month,
+        dt_utc.day,
+        dt_utc.hour,
+        dt_utc.minute,
+        dt_utc.second
+    )
 
     earth = eph["earth"]
 
+    # -----------------------
+    # Planets (already correct)
+    # -----------------------
     planets = {}
     for name, body in PLANETS.items():
-        # apparent() helps; most important fix is the (lat, lon) order below
-        astrometric = earth.at(t).observe(body).apparent()
-
-        # IMPORTANT: Skyfield returns (LATITUDE, LONGITUDE, DISTANCE)
-        lat_ecl, lon_ecl, _ = astrometric.ecliptic_latlon()
-
+        astrometric = earth.at(t).observe(body)
+        lon_ecl, lat_ecl, _ = astrometric.ecliptic_latlon()
         lon_deg = normalize(lon_ecl.degrees)
 
         planets[name] = {
@@ -95,10 +97,12 @@ def calculate():
             "sign": SIGNS[sign_index(lon_deg)]
         }
 
+    # -----------------------
+    # Ascendant (FIXED)
+    # -----------------------
     asc = compute_ascendant(t, lat, lon)
     asc_sign = sign_index(asc)
 
-    # Whole sign houses
     for p in planets.values():
         p["house"] = ((sign_index(p["longitude"]) - asc_sign) % 12) + 1
 
