@@ -2,5 +2,5 @@ flask
 flask-cors
 skyfield
 numpy
-pytz
+timezonefinder
 gunicorn
