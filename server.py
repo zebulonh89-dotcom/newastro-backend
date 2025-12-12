@@ -1,26 +1,26 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from skyfield.api import load, Topos
+import swisseph as swe
 import pytz
 from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-# -----------------------
-# Skyfield setup
-# -----------------------
-ts = load.timescale()
-eph = load("de421.bsp")
+# -------------------------------------------------
+# Swiss Ephemeris setup
+# -------------------------------------------------
+# IMPORTANT: ephemeris files must be in ./ephe
+swe.set_ephe_path("./ephe")
 
 PLANETS = {
-    "sun": eph["sun"],
-    "moon": eph["moon"],
-    "mercury": eph["mercury"],
-    "venus": eph["venus"],
-    "mars": eph["mars"],
-    "jupiter": eph["jupiter barycenter"],
-    "saturn": eph["saturn barycenter"],
+    "sun": swe.SUN,
+    "moon": swe.MOON,
+    "mercury": swe.MERCURY,
+    "venus": swe.VENUS,
+    "mars": swe.MARS,
+    "jupiter": swe.JUPITER,
+    "saturn": swe.SATURN,
 }
 
 SIGNS = [
@@ -29,93 +29,68 @@ SIGNS = [
     "Sagittarius", "Capricorn", "Aquarius", "Pisces"
 ]
 
-# -----------------------
+# -------------------------------------------------
 # Helpers
-# -----------------------
+# -------------------------------------------------
 def normalize(deg):
     return deg % 360
 
 def sign_index(deg):
     return int(deg // 30)
 
-# -----------------------
-# Ascendant (correct)
-# -----------------------
-def compute_ascendant(t, lat, lon):
-    observer = eph["earth"] + Topos(
-        latitude_degrees=lat,
-        longitude_degrees=lon
-    )
-
-    # Due east on horizon
-    east = observer.at(t).from_altaz(
-        alt_degrees=0,
-        az_degrees=90
-    )
-
-    lon_ecl, lat_ecl, _ = east.ecliptic_latlon()
-    return normalize(lon_ecl.degrees)
-
-# -----------------------
+# -------------------------------------------------
 # API
-# -----------------------
+# -------------------------------------------------
 @app.route("/calculate", methods=["POST"])
 def calculate():
     data = request.get_json(force=True)
 
-    date = data["date"]
-    time = data["time"]
+    date = data["date"]           # YYYY-MM-DD
+    time = data["time"]           # HH:MM (LOCAL)
     lat = float(data["latitude"])
     lon = float(data["longitude"])
-    tz_name = data["timezone"]
+    tz_name = data["timezone"]    # e.g. America/Detroit
 
+    # -------------------------
+    # Local → UTC
+    # -------------------------
     tz = pytz.timezone(tz_name)
-
-    # Build LOCAL datetime
-    dt_local = datetime.strptime(
-        f"{date} {time}",
-        "%Y-%m-%d %H:%M"
-    )
+    dt_local = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
     dt_local = tz.localize(dt_local)
+    dt_utc = dt_local.astimezone(pytz.utc)
 
-    # Convert to UTC ONCE
-    dt_utc = dt_local.astimezone(pytz.UTC)
-
-    # Skyfield time (UTC)
-    t = ts.utc(
+    # -------------------------
+    # Julian Day (UT)
+    # -------------------------
+    jd_ut = swe.julday(
         dt_utc.year,
         dt_utc.month,
         dt_utc.day,
-        dt_utc.hour,
-        dt_utc.minute,
-        dt_utc.second
+        dt_utc.hour + dt_utc.minute / 60.0
     )
 
-    earth = eph["earth"]
-
-    # -----------------------
-    # Planets (FIXED)
-    # -----------------------
+    # -------------------------
+    # Planets (Swiss Ephemeris)
+    # -------------------------
     planets = {}
 
-    for name, body in PLANETS.items():
-        apparent = earth.at(t).observe(body).apparent()
-        lon_ecl, lat_ecl, _ = apparent.ecliptic_latlon()
-
-        lon_deg = normalize(lon_ecl.degrees)
+    for name, pid in PLANETS.items():
+        lonlat = swe.calc_ut(jd_ut, pid)[0]
+        lon = normalize(lonlat[0])
 
         planets[name] = {
-            "longitude": lon_deg,
-            "sign": SIGNS[sign_index(lon_deg)]
+            "longitude": lon,
+            "sign": SIGNS[sign_index(lon)]
         }
 
-    # -----------------------
-    # Ascendant
-    # -----------------------
-    asc = compute_ascendant(t, lat, lon)
+    # -------------------------
+    # Houses + Ascendant (Swiss)
+    # Whole Sign
+    # -------------------------
+    houses, ascmc = swe.houses_ex(jd_ut, lat, lon, b'W')
+    asc = normalize(ascmc[0])
     asc_sign = sign_index(asc)
 
-    # Whole sign houses
     for p in planets.values():
         p["house"] = ((sign_index(p["longitude"]) - asc_sign) % 12) + 1
 
