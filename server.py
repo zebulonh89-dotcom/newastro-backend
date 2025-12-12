@@ -1,17 +1,14 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from skyfield.api import load
-import pytz
 import numpy as np
+import pytz
 from datetime import datetime
-import traceback
 
 app = Flask(__name__)
 CORS(app)
 
-# -----------------------
 # Skyfield setup
-# -----------------------
 ts = load.timescale()
 eph = load("de421.bsp")
 
@@ -31,23 +28,30 @@ SIGNS = [
     "Sagittarius", "Capricorn", "Aquarius", "Pisces"
 ]
 
-# -----------------------
-# Helpers
-# -----------------------
 def normalize(deg):
-    return deg % 360
+    return deg % 360.0
 
 def sign_index(deg):
     return int(deg // 30)
 
-def compute_ascendant(t, lat, lon):
-    # Greenwich Apparent Sidereal Time
-    gast = t.gast * 15.0  # degrees
-    lst = normalize(gast + lon)
+def compute_ascendant(t, lat_deg, lon_deg):
+    """
+    Approximate tropical Ascendant:
+    - Use apparent sidereal time if available (GAST), else fallback to GMST
+    - Standard formula with mean obliquity (can refine later)
+    """
+    # Skyfield Time has .gast on most versions; fallback to gmst if not present
+    sidereal_hours = getattr(t, "gast", None)
+    if sidereal_hours is None:
+        sidereal_hours = t.gmst
 
+    # Local Sidereal Time (degrees)
+    lst_deg = (sidereal_hours * 15.0 + lon_deg) % 360.0
+    lst = np.deg2rad(lst_deg)
+
+    # Mean obliquity of the ecliptic (degrees)
     eps = np.deg2rad(23.4392911)
-    lat = np.deg2rad(lat)
-    lst = np.deg2rad(lst)
+    lat = np.deg2rad(lat_deg)
 
     asc = np.arctan2(
         np.sin(lst),
@@ -56,75 +60,57 @@ def compute_ascendant(t, lat, lon):
 
     return normalize(np.rad2deg(asc))
 
-# -----------------------
-# Route
-# -----------------------
 @app.route("/calculate", methods=["POST"])
 def calculate():
-    try:
-        data = request.get_json(force=True)
+    data = request.get_json(force=True)
 
-        date = data.get("date")
-        time = data.get("time")
-        lat = float(data.get("latitude"))
-        lon = float(data.get("longitude"))
-        tz_name = data.get("timezone")
+    date = data["date"]          # LOCAL date string: YYYY-MM-DD
+    time = data["time"]          # LOCAL time string: HH:MM (24h)
+    lat = float(data["latitude"])
+    lon = float(data["longitude"])
+    tz_name = data["timezone"]   # IANA, e.g. America/Detroit
 
-        if not all([date, time, tz_name]):
-            return jsonify({"error": "Missing date, time, or timezone"}), 400
+    tz = pytz.timezone(tz_name)
 
-        # Parse LOCAL time
-        tz = pytz.timezone(tz_name)
-        dt_local = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
-        dt_local = tz.localize(dt_local)
+    dt_local = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+    dt_local = tz.localize(dt_local)
+    dt_utc = dt_local.astimezone(pytz.utc)
 
-        # Convert to UTC
-        dt_utc = dt_local.astimezone(pytz.utc)
+    t = ts.utc(dt_utc.year, dt_utc.month, dt_utc.day, dt_utc.hour, dt_utc.minute, dt_utc.second)
 
-        t = ts.utc(
-            dt_utc.year,
-            dt_utc.month,
-            dt_utc.day,
-            dt_utc.hour,
-            dt_utc.minute,
-            dt_utc.second
-        )
+    earth = eph["earth"]
 
-        earth = eph["earth"]
+    planets = {}
+    for name, body in PLANETS.items():
+        # apparent() helps; most important fix is the (lat, lon) order below
+        astrometric = earth.at(t).observe(body).apparent()
 
-        planets = {}
-        for name, body in PLANETS.items():
-            astrometric = earth.at(t).observe(body)
-            lon_ecl, lat_ecl, _ = astrometric.ecliptic_latlon()
-            lon_deg = normalize(lon_ecl.degrees)
+        # IMPORTANT: Skyfield returns (LATITUDE, LONGITUDE, DISTANCE)
+        lat_ecl, lon_ecl, _ = astrometric.ecliptic_latlon()
 
-            planets[name] = {
-                "longitude": lon_deg,
-                "sign": SIGNS[sign_index(lon_deg)]
-            }
+        lon_deg = normalize(lon_ecl.degrees)
 
-        asc = compute_ascendant(t, lat, lon)
-        asc_sign = sign_index(asc)
+        planets[name] = {
+            "longitude": lon_deg,
+            "sign": SIGNS[sign_index(lon_deg)]
+        }
 
-        for p in planets.values():
-            p["house"] = ((sign_index(p["longitude"]) - asc_sign) % 12) + 1
+    asc = compute_ascendant(t, lat, lon)
+    asc_sign = sign_index(asc)
 
-        return jsonify({
-            "ascendant": {
-                "longitude": asc,
-                "sign": SIGNS[asc_sign]
-            },
-            "planets": planets,
-            "timezone": tz_name,
-            "utc": dt_utc.isoformat()
-        })
+    # Whole sign houses
+    for p in planets.values():
+        p["house"] = ((sign_index(p["longitude"]) - asc_sign) % 12) + 1
 
-    except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "trace": traceback.format_exc()
-        }), 500
+    return jsonify({
+        "ascendant": {
+            "longitude": asc,
+            "sign": SIGNS[asc_sign]
+        },
+        "planets": planets,
+        "timezone": tz_name,
+        "utc": dt_utc.isoformat()
+    })
 
-# -----------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
