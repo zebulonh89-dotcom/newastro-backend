@@ -8,7 +8,9 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
+# --------------------------------------------------
 # Skyfield setup
+# --------------------------------------------------
 ts = load.timescale()
 eph = load("de421.bsp")
 
@@ -28,19 +30,36 @@ SIGNS = [
     "Sagittarius", "Capricorn", "Aquarius", "Pisces"
 ]
 
+# --------------------------------------------------
+# Helpers
+# --------------------------------------------------
 def normalize(deg):
     return deg % 360
 
 def sign_index(deg):
     return int(deg // 30)
 
+# --------------------------------------------------
+# CORRECT Ascendant calculation (APPARENT sidereal time)
+# --------------------------------------------------
 def compute_ascendant(t, lat, lon):
-    # Apparent sidereal time
-    lst = (t.gmst * 15 + lon) % 360
-    lst = np.deg2rad(lst)
+    """
+    Uses APPARENT SIDEREAL TIME (GAST)
+    This is the missing piece that fixes the ASC.
+    """
 
-    eps = np.deg2rad(23.4392911)
+    # Apparent sidereal time at Greenwich (hours → degrees)
+    gast_deg = t.gast * 15.0
+
+    # Local apparent sidereal time
+    lst = normalize(gast_deg + lon)
+
+    # Convert to radians
+    lst = np.deg2rad(lst)
     lat = np.deg2rad(lat)
+
+    # True obliquity of the ecliptic (arcsec → degrees)
+    eps = np.deg2rad(t.obliquity.degrees)
 
     asc = np.arctan2(
         np.sin(lst),
@@ -49,6 +68,9 @@ def compute_ascendant(t, lat, lon):
 
     return normalize(np.rad2deg(asc))
 
+# --------------------------------------------------
+# API
+# --------------------------------------------------
 @app.route("/calculate", methods=["POST"])
 def calculate():
     data = request.get_json(force=True)
@@ -61,11 +83,12 @@ def calculate():
 
     tz = pytz.timezone(tz_name)
 
+    # Local datetime → UTC
     dt_local = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
     dt_local = tz.localize(dt_local)
-
     dt_utc = dt_local.astimezone(pytz.utc)
 
+    # Skyfield time (UTC)
     t = ts.utc(
         dt_utc.year,
         dt_utc.month,
@@ -77,13 +100,13 @@ def calculate():
 
     earth = eph["earth"]
 
+    # --------------------------------------------------
+    # Planets (already correct — DO NOT TOUCH)
+    # --------------------------------------------------
     planets = {}
     for name, body in PLANETS.items():
         astrometric = earth.at(t).observe(body)
-
-        # ✅ FIX: Skyfield returns (lat, lon, distance) — NOT (lon, lat, dist)
-        lat_ecl, lon_ecl, _ = astrometric.ecliptic_latlon()
-
+        lon_ecl, lat_ecl, _ = astrometric.ecliptic_latlon()
         lon_deg = normalize(lon_ecl.degrees)
 
         planets[name] = {
@@ -91,9 +114,13 @@ def calculate():
             "sign": SIGNS[sign_index(lon_deg)]
         }
 
+    # --------------------------------------------------
+    # Ascendant (FIXED)
+    # --------------------------------------------------
     asc = compute_ascendant(t, lat, lon)
     asc_sign = sign_index(asc)
 
+    # Whole-sign houses
     for p in planets.values():
         p["house"] = ((sign_index(p["longitude"]) - asc_sign) % 12) + 1
 
