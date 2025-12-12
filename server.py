@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from skyfield.api import load
-from timezonefinder import TimezoneFinder
 import pytz
 import numpy as np
 from datetime import datetime
@@ -29,8 +28,6 @@ SIGNS = [
     "Sagittarius", "Capricorn", "Aquarius", "Pisces"
 ]
 
-tf = TimezoneFinder()
-
 def normalize(deg):
     return deg % 360
 
@@ -38,11 +35,11 @@ def sign_index(deg):
     return int(deg // 30)
 
 def compute_ascendant(t, lat, lon):
-    # Apparent sidereal time
+    # Apparent sidereal time (degrees → radians)
     lst = (t.gmst * 15 + lon) % 360
     lst = np.deg2rad(lst)
 
-    eps = np.deg2rad(23.4392911)
+    eps = np.deg2rad(23.4392911)  # obliquity
     lat = np.deg2rad(lat)
 
     asc = np.arctan2(
@@ -60,13 +57,13 @@ def calculate():
     time = data["time"]
     lat = float(data["latitude"])
     lon = float(data["longitude"])
-    tz_name = data["timezone"]
+    tz_name = data["timezone"]  # REQUIRED
 
     tz = pytz.timezone(tz_name)
 
+    # LOCAL → UTC
     dt_local = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
     dt_local = tz.localize(dt_local)
-
     dt_utc = dt_local.astimezone(pytz.utc)
 
     t = ts.utc(
@@ -94,6 +91,7 @@ def calculate():
     asc = compute_ascendant(t, lat, lon)
     asc_sign = sign_index(asc)
 
+    # Whole-sign houses
     for p in planets.values():
         p["house"] = ((sign_index(p["longitude"]) - asc_sign) % 12) + 1
 
