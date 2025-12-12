@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from skyfield.api import load, Topos
 import pytz
-import numpy as np
 from datetime import datetime
 
 app = Flask(__name__)
@@ -40,18 +39,22 @@ def sign_index(deg):
     return int(deg // 30)
 
 # -----------------------
-# CORRECT Ascendant
+# Ascendant (correct)
 # -----------------------
 def compute_ascendant(t, lat, lon):
-    observer = eph["earth"] + Topos(latitude_degrees=lat, longitude_degrees=lon)
+    observer = eph["earth"] + Topos(
+        latitude_degrees=lat,
+        longitude_degrees=lon
+    )
 
-    # Direction: due east on the horizon
-    east = observer.at(t).from_altaz(alt_degrees=0, az_degrees=90)
+    # Due east on horizon
+    east = observer.at(t).from_altaz(
+        alt_degrees=0,
+        az_degrees=90
+    )
 
-    # Convert to apparent ecliptic coordinates
-    lon, lat, _ = east.ecliptic_latlon()
-
-    return normalize(lon.degrees)
+    lon_ecl, lat_ecl, _ = east.ecliptic_latlon()
+    return normalize(lon_ecl.degrees)
 
 # -----------------------
 # API
@@ -68,10 +71,17 @@ def calculate():
 
     tz = pytz.timezone(tz_name)
 
-    dt_local = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+    # Build LOCAL datetime
+    dt_local = datetime.strptime(
+        f"{date} {time}",
+        "%Y-%m-%d %H:%M"
+    )
     dt_local = tz.localize(dt_local)
-    dt_utc = dt_local.astimezone(pytz.utc)
 
+    # Convert to UTC ONCE
+    dt_utc = dt_local.astimezone(pytz.UTC)
+
+    # Skyfield time (UTC)
     t = ts.utc(
         dt_utc.year,
         dt_utc.month,
@@ -84,12 +94,14 @@ def calculate():
     earth = eph["earth"]
 
     # -----------------------
-    # Planets (already correct)
+    # Planets (FIXED)
     # -----------------------
     planets = {}
+
     for name, body in PLANETS.items():
-        astrometric = earth.at(t).observe(body)
-        lon_ecl, lat_ecl, _ = astrometric.ecliptic_latlon()
+        apparent = earth.at(t).observe(body).apparent()
+        lon_ecl, lat_ecl, _ = apparent.ecliptic_latlon()
+
         lon_deg = normalize(lon_ecl.degrees)
 
         planets[name] = {
@@ -98,11 +110,12 @@ def calculate():
         }
 
     # -----------------------
-    # Ascendant (FIXED)
+    # Ascendant
     # -----------------------
     asc = compute_ascendant(t, lat, lon)
     asc_sign = sign_index(asc)
 
+    # Whole sign houses
     for p in planets.values():
         p["house"] = ((sign_index(p["longitude"]) - asc_sign) % 12) + 1
 
