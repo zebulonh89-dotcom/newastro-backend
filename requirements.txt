@@ -1,6 +1,7 @@
-flask
-flask-cors
-skyfield
-numpy
-pytz
-pyswisseph
+Flask==2.3.2
+Flask-Cors==3.0.10
+skyfield==1.53
+numpy==2.3.5
+pytz==2023.3
+timezonefinder==6.2.0
+gunicorn==21.2.0
