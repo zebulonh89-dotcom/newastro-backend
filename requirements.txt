@@ -3,5 +3,4 @@ Flask-Cors==3.0.10
 skyfield==1.53
 numpy==1.26.4
 pytz==2023.3
-timezonefinder==6.2.0
 gunicorn==21.2.0
