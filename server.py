@@ -35,11 +35,11 @@ def sign_index(deg):
     return int(deg // 30)
 
 def compute_ascendant(t, lat, lon):
-    # Apparent sidereal time (degrees → radians)
+    # Apparent sidereal time
     lst = (t.gmst * 15 + lon) % 360
     lst = np.deg2rad(lst)
 
-    eps = np.deg2rad(23.4392911)  # obliquity
+    eps = np.deg2rad(23.4392911)
     lat = np.deg2rad(lat)
 
     asc = np.arctan2(
@@ -57,13 +57,13 @@ def calculate():
     time = data["time"]
     lat = float(data["latitude"])
     lon = float(data["longitude"])
-    tz_name = data["timezone"]  # REQUIRED
+    tz_name = data["timezone"]
 
     tz = pytz.timezone(tz_name)
 
-    # LOCAL → UTC
     dt_local = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
     dt_local = tz.localize(dt_local)
+
     dt_utc = dt_local.astimezone(pytz.utc)
 
     t = ts.utc(
@@ -80,7 +80,10 @@ def calculate():
     planets = {}
     for name, body in PLANETS.items():
         astrometric = earth.at(t).observe(body)
-        lon_ecl, lat_ecl, _ = astrometric.ecliptic_latlon()
+
+        # ✅ FIX: Skyfield returns (lat, lon, distance) — NOT (lon, lat, dist)
+        lat_ecl, lon_ecl, _ = astrometric.ecliptic_latlon()
+
         lon_deg = normalize(lon_ecl.degrees)
 
         planets[name] = {
@@ -91,7 +94,6 @@ def calculate():
     asc = compute_ascendant(t, lat, lon)
     asc_sign = sign_index(asc)
 
-    # Whole-sign houses
     for p in planets.values():
         p["house"] = ((sign_index(p["longitude"]) - asc_sign) % 12) + 1
 
